@@ -1,5 +1,7 @@
 # (Im)PerfectProject(or)
 
+![ImperfectProjector](./images/ImperfectProjector.png)
+
 A few years ago I bought a low-quality projector from Amazon so I could watch movies in my room. To be honest, it works pretty well, has a decent brightness, and has like five different ways you can stream video/audio to it, so I can't complain too much.
 
 It does have an interesting mode of operation, where it broadcasts a WiFi network you can connect to, and then start controlling the device via a web interface. So what I'm seeing is: perfect hacking target.
