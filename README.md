@@ -6,7 +6,7 @@ A few years ago I bought a low-quality projector from Amazon so I could watch mo
 
 It does have an interesting mode of operation, where it broadcasts a WiFi network you can connect to, and then start controlling the device via a web interface. So what I'm seeing is: perfect hacking target.
 
-> Note: Because I am *silly*, I didn't take any pictures of the user interface with the projector before I accidentally damaged the ribbon cable for the lens.
+## Reconnaissance
 
 ## Reconnaissance
 
@@ -37,11 +37,11 @@ OS and Service detection performed. Please report any incorrect results at https
 Nmap done: 1 IP address (1 host up) scanned in 22.13 seconds
 ```
 
-So looks like our only attack surface will be the web interface. The web server uses "Common Gateway Interface" (CGI) patterns for doing anything on the system. For example, to control the media (i.e. send pause, play, volume controls) you would visit `/cgi-bin/media.cgi`.
+Seems like the attack surface is the web interface that the projector exposes on port 80. The web server uses "Common Gateway Interface" (CGI) scripts for doing anything on the system. For example, to control the media (i.e. send pause, play, volume controls) you would visit `/cgi-bin/media.cgi`.
 
-I looked up the "boa" web server, and it looks like it's a fairly old, relatively-discontinued web server. There's a few vulnerabilities and CVEs out for it, but they tend to be disputed and application-specific, not targetting the actual webserver. So, I'm not going to try too hard to actually inspect the server.
+I looked up the `boa` web server, and it looks like it's a fairly old, relatively-discontinued web server. There's a few vulnerabilities and CVEs out for it, but they tend to be disputed and application-specific, not targetting the actual webserver. So, I'm not going to try too hard to actually inspect the server.
 
-I want to find out what other CGI scripts exist, that just aren't linked via the web pages I've found. It's time to break out `wfuzz` and see if we get any hits! I cloned the repository to get their wordlists and ran it against a few of them to get these results:
+I want to find out what other CGI scripts exist, that just aren't linked via the web pages I've found. I've found that developers accidentally leave some debugging web pages behind, and they're often pretty helpful for my reversing processes. It's time to break out `wfuzz` and see if we get any hits! I cloned the repository to get their wordlists and ran it against a few of them to get these results:
 
 ```bash
 $ cat wfuzz/wordlist/general/admin-panels.txt wfuzz/wordlist/general/megabeast.txt wfuzz/wordlist/vulns/cgis.txt wfuzz/wordlist/vulns/dirTraversal-nix.txt > wordlist.txt
@@ -104,7 +104,7 @@ Filtered Requests: 49703
 Requests/sec.: 0
 ```
 
-This actually found a few endpoints that I didn't see by looking at the HTML of the pages I had already seen. I played around with a few of these, but didn't find anything *too* interesting. Of note are:
+This actually found a few CGI scripts that I hadn't found by looking at the HTML. I played around with a few of these, but didn't find anything *too* interesting. There is a `test.cgi` and a `debug.cgi`, but playing around with them didn't seem to be too fruitful: 
 
 ```bash
 $ curl -vvv http://10.0.0.227/cgi-bin/test.cgi           
@@ -159,18 +159,18 @@ failed to connect to '10.0.0.227:5555': Connection refused
 
 ## The Hardware
 
-It's time to open this sucker up, let's see if there is UART or some other serial communication mechanism. Now, this is where I messed up, *just a little bit*, and accidentally severed one of the connections on the ribbon cable that connects the actual projector lens to the board. The projector still turns on, but it's just a blank white screen now. Whoops! You can see below an image of the main board, as well as some annotations, below.
+It's time to open this sucker up, and see if there is UART or some other serial communication mechanism. Now, this is where I messed up, *just a little bit*, and accidentally severed one of the connections on the ribbon cable that connects the actual projector lens to the board. The projector still turns on, but it's just a blank white screen now. Whoops! You can see below an image of the main board, as well as some annotations, below.
 
 ![Main Board](./images/board-annotated.png)
 
-
 ### Getting UART
 
-Anyway, after opening up the top, I noticed three pins labelled RX, TX, and GND. Pretty indicative of UART, but we'll need to connect to it first to make sure. Unfortunately, there weren't any header pins soldered on to it, so I'll have to do that first. After my incredibly shoddy solder job, I have everything hooked up.
+After opening up the projector, I noticed three pins labelled RX, TX, and GND. Pretty indicative of UART, but we'll need to connect to it first to make sure. Unfortunately, there weren't any header pins soldered on to it, so I'll have to do that first. After my incredibly shoddy solder job, I have everything hooked up:
 
 ![Solder Work](./images/solder.jpg)
 
-Let's check out what comes through using `minicom`, it's fairly verbose, so I included just some interesting parts of the startup sequence:
+
+We can use `minicom` to read the data coming from the UART, and, if it's an interactive shell, communicate to the board. After the startup sequence, I tried typing in some characters, but nothing happened, so I think this is purely just an output of `dmesg`, or something similar. I included some of the interesting parts of the startup sequence (it was a bit too verbose to include it all in a blog post):
 
 ```bash
 $ sudo minicom --dev /dev/ttyUSB0 --capturefile minicom.projector.txt
@@ -236,9 +236,9 @@ Creating 7 MTD partitions on "NOR_FLASH":
 !!!sd20x_ota_download line 509 Download config.txt failed!
 ```
 
-We can start to understand a little bit more about the device given this output. We know it's an ARM Linux device, its firmware is packed using squashfs. There are a few partitions in the SPI NOR Flash chip. And interestingly, it seems to attempt Over the Air updates by reaching out to `http://43.254.2.156:8000/ota/htc/v53/config.txt`. Let's look at this a little bit more.
+Given all of this output, we can start to learn a little bit more about the device. We know it's an ARM Linux device, and its firmware is packed using squashfs. There are a few partitions in the SPI NOR Flash chip. And interestingly, it seems to attempt Over the Air (OTA) updates by reaching out to `http://43.254.2.156:8000/ota/htc/v53/config.txt`. Let's look at this a little bit more!
 
-The IP maps to `ecs-43-254-2-156.compute.hwclouds-dns.com` which is Huawei Cloud's DNS servers. I imagine this is pretty similar to Amazon's EC2 DNS names. If we go to the parent directory of the `config.txt`, we can keep navigating up the directory tree until we find a few other firmware types. I have *no* idea what devices these correspond to, but after some searching, I found an existing [`config.txt`](http://43.254.2.156:8000/ota/yg/v53/sd203_RTL8731AU/), along side two files: `otaunpack` and `sd203ota.bin.gz`. The configuration file seems to include some versioning information, and the MD5 hashes of the update and the `otaunpack` binary. I'm going to *guess* that the `otaunpack` binary does the unpacking and writing to the SPI NOR Flash chip.
+The IP maps to `ecs-43-254-2-156.compute.hwclouds-dns.com` which is Huawei Cloud's DNS servers. I imagine this is pretty similar to Amazon's EC2 DNS names. If we go to the parent directory of the `config.txt`, we can keep navigating up the directory tree until we find a few other firmware types. I have *no* idea what devices these correspond to, but after some searching, I found an existing [`config.txt`](http://43.254.2.156:8000/ota/yg/v53/sd203_RTL8731AU/), along side two files: `otaunpack` and `sd203ota.bin.gz`. The configuration file seems to include some versioning information, and the MD5 hashes of the update and the `otaunpack` binary. I'm going to *guess* that the `otaunpack` binary does the unpacking and writing to the SPI NOR Flash chip:
 
 ```ini
 major_version=1
@@ -251,7 +251,7 @@ MD5=678254f11abb56dc03dd28ebd214a6fe
 MD5_OTA=5d5ed480e0061efcf1df14870a1bd952
 ```
 
-I'm starting to wonder if I can force my own OTA by ARP Poisoning the network and advertising that IP Address as my own... Anyway, I'll look into that later. I want to try dumping the firmware from the Flash chip, but truth be told, my SOIC8 reader doesn't get here until tomorrow. You know what that means... hand-jamming a bunch of components that shouldn't be in the same solution to get something that half works (⌐▨_▨).
+I'm starting to wonder if I can force my own OTA by ARP Poisoning the network and advertising that IP Address as my own... Anyway, I'll look into that later. I want to try dumping the firmware from the Flash chip, but my SOIC8 reader doesn't get here until tomorrow. You know what that means... hand-jamming a bunch of components that shouldn't be in the same solution to get something that half works (⌐▨_▨).
 
 ### Dumping the Firmware
 
@@ -265,31 +265,30 @@ I tried my best to read the text off the chip, and googled "XMC 25OH128" which b
 
 This is great and all, but what it doesn't tell me is the orientation of the chip, i.e. is the dot on the chip the `CS` or the `SI`? I ended up pulling their actual [Data Sheet](https://www.xmcwh.com/uploads/801/XM25QH128C_Ver2.1.pdf) which proved to be *much* more useful.
 
-First, we have to figure out some information from the rest of the characters on the physical chip itself, as this will tell us the chip layout. Using the "Ordering Information" diagram from the Data Sheet:
+In order to figure out which diagram from the Data Sheet we need to use, we have to figure out some information from the rest of the characters on the physical chip itself. Using the "Ordering Information" diagram from the Data Sheet, we can figure that this is the "SOP 208mil 8L" format because the chip reads "XMC25QH128CH":
 
 ![Ordering Information](./images/ordering-information.png)
 
-We read from the physical chip "XMC25QH128CH"
-
-Now that we know it's Package Code H (SOP 208mil 8L), we know that we're using Figure 2a. Note that these figures actually contain the dot that we see on the physical chip, so we can orient ourselves.
+We can reference Figure 2a on the Data Sheet to figure out the pin orientation, too:
 
 ![Wiring Diagram](./images/better-diagram.png)
 
-Okay, let's get some of the test-hooks onto the legs of the Flash chip, connect the wires to the hooks, and finally plug it all into our Flipper Zero. The [SPI Mem Manager](https://lab.flipper.net/apps/spi_mem_manager) app comes with a wiring guide:
+Now, after all of that work, I realized that it was the same orientation for both Figures on the Data Sheet, so none of that was necessary. Lol.
+
+Let's get some of the test-hooks onto the legs of the Flash chip, connect the wires to the hooks, and finally plug it all into our Flipper Zero. The [SPI Mem Manager](https://lab.flipper.net/apps/spi_mem_manager) app comes with a wiring guide:
 
 ![SPI Mem Manager Wiring Guide](./images/flipper-wiring-guide.png)
 
-I got the FlipperZero all wired up, but the screen just sits at "Detecting SPI Chip...". I looked at the source for the SPI Mem Manager, and saw that the [XMC25QH128CH might not be supported](https://github.com/flipperdevices/flipperzero-good-faps/blob/3322caaeb25e1fa50d55f864ba2034b2c8b09292/spi_mem_manager/lib/spi/spi_mem_chip_arr.c#L1401)... Bummer. I'll have a go again tomorrow when my SOIC8 reader gets in the mail.
+I got the FlipperZero all wired up, but the screen just sits at "Detecting SPI Chip...". I looked at the source for the SPI Mem Manager, and saw that the [XMC25QH128CH might not be supported](https://github.com/flipperdevices/flipperzero-good-faps/blob/3322caaeb25e1fa50d55f864ba2034b2c8b09292/spi_mem_manager/lib/spi/spi_mem_chip_arr.c#L1401)... Bummer. I'll have a go again tomorrow when my SOIC8 reader gets in the mail:
 
 ![Detecting Screen](./images/detecting.png)
 ![FlipperZero Wiring](./images/flipper-wiring.png)
 
-
 ## ARP Spoofing
 
-I was originally going to wait for my SOIC8 reader to get into the mail, but I had some late-night (lol, it's 8pm) motivation to try the ARP Spoofing route. The idea is we abuse the OTA functionality that the projector has, run our own web server hosting a malicious binary, and finally poison the ARP in our network to force the projector to think we're the update server.
+I was originally going to wait for my SOIC8 reader to get into the mail, but I had some late night (lol, it's 8pm) motivation to try the ARP Spoofing route. The idea is we abuse the OTA functionality that the projector has, run our own web server hosting a malicious binary, and finally poison the ARP in our network to force the projector to think we're the update server.
 
-I'll start a WireShark capture, start the projector, and wait for the ARP request packet to come through to confirm this should work. Truth be told, and I'm sure it's evident at this point, I am *not* a networking guy. So whether or not I'm on the right track for this is unbeknownst to me.
+I'll start a WireShark capture, start the projector, and wait for the ARP request packet (from the projector, asking for the OTA server) to come through to confirm this should work. Truth be told, and I'm sure it's evident at this point, I am *not* a networking guy. So, whether or not I'm on the right track for this is unbeknownst to me.
 
 I didn't see the IP Address I expected, and that kind of makes sense. Why would you ask around your subnet who has the IP Address that doesn't belong in your network. After a few rounds of The Finals, and a solid 10 hours of sleep, I decided to try again.
 
@@ -297,7 +296,7 @@ I went ahead and used Ettercap to conduct the ARP Poisoning attack by selecting 
 
 ![ARP Poison](./images/ettercap-connection.png)
 
-The only other thing to do is figure out how to redirect that traffic to me, rather than just inspecting it. To do this, we'll make an Ettercap Filter that filters the connection to the one of interest, and changes the destination IP Address.
+The only other thing to do is figure out how to redirect that traffic to me, because right now, Ettercap is just inspecting the traffic. To do this, we'll make an Ettercap Filter that filters the connection to the one of interest, and changes the destination IP Address:
 
 ```c
 if (eth.proto == IP && ip.src == '10.0.0.227' && ip.dst == '43.254.2.156' && ip.proto == TCP && tcp.dst == 8000) {
@@ -353,15 +352,15 @@ Disassebling "test.ef" content...
  9 instructions decoded.
 ```
 
-This all looks great. Let's load the filter into Ettercap, start a simple Python server using `python3 -m http.server 8000`, and restart the projector. Once the projector came back online, I conducted a spoof attack again, saw the connection go through, and actually saw that Ettercap modified it. However, I didn't get any connections on my Python server. I'm not very sure why this is happening. However, what I'll do instead, to be a little less disruptive, is change the response from the remote server to be a redirect to my IP Address, and hope that works instead. This is application-specific, as the projector will need to know what to do with a redirect in the first place. But let's try it!
+Let's load the filter into Ettercap, start a simple Python server using `python3 -m http.server 8000`, and restart the projector. Once the projector came back online, I conducted a spoof attack again (using Ettercap), saw the connection go through, and actually saw that Ettercap modified it. However, I didn't get any connections on my Python server. I'm not very sure why this is happening.
 
-As a quick aside, while I was doing all of this, I was realizing that this attack vector is fairly limited, i.e. you have to wait for the projector to come online, ARP Poison projector to start a MITM attack, and catch the OTA logic that only happens on startup. Until I found an endpoint that forces the device to attempt an OTA: `curl http://10.0.0.227/cgi-bin/ota_start.cgi -X POST --data-raw 'updatetxt=1'`. Now we can hit that whenever we want while we test our scripts.
+As a quick aside, while I was doing all of this, I was realizing that this attack vector is fairly limited, i.e. you have to wait for the projector to come online, ARP Poison the projector to start a MITM attack, and catch the OTA logic that only happens on startup. Until I found an endpoint that forces the device to attempt an OTA: `curl http://10.0.0.227/cgi-bin/ota_start.cgi -X POST --data-raw 'updatetxt=1'`. Now we can hit that whenever we want while we test our scripts.
 
-I ran another test and something happened... My projector isn't connecting to the WiFi anymore! I messed around with the cables, turned it on and off a few times, but nothing was working. I plugged the UART back in and read the startup sequence log and it isn't even trying to connect to my WiFi network or get an IP. I think I accidentally clicked a "Reset the Device" button on the webpage, by accident erasing my WiFi login information. And since I accidentally broke the projector, I can't make it re-join my network. What a bummer. I ordered a replacement projector in the meantime.
+I ran another test and something happened... My projector isn't connecting to the WiFi anymore! I messed around with the cables, turned it on and off a few times, but nothing was working. I plugged the UART back in and read the startup sequence log and it isn't even trying to connect to my WiFi network or get an IP. I think I accidentally clicked a "Reset the Device" button on the webpage, by accident erasing my WiFi login information. And since I accidentally broke the projector's ribbon cable, I can't make it re-join my network as I can't see the "screen". What a bummer. I ordered a replacement projector in the meantime.
 
-### Back to SPI
+## Back to Hardware
 
-While I wait for my new projector to get here, I can try using the SOIC8 reader that just got in! I installed `flashrom`, plugged everything in, realized I had to use a different USB port (thanks random GitHub Issue!), and got a dump! I just made sure to specify the chip I was reading from and the programmer I was using.
+While I wait for my new projector to get here, I can try using the SOIC8 reader that just got in! I installed `flashrom`, plugged everything in, realized I had to use a different USB port (thanks random GitHub Issue!), and got a dump! I just made sure to specify the chip I was reading from and the programmer I was using:
 
 ```bash
 $ sudo flashrom --verbose --programmer ch341a_spi --chip XM25QH128C --read rom.bin
@@ -395,7 +394,8 @@ Reading flash... done.
 
 ![Reading the Flash ROM](./images/rom-read.png)
 
-After longer than I was expecting it finished up. It looks to be 16Mb which is exactly what is expected after referring to the manufacturer's Data Sheet. I ran `binwalk` on it and extracted the filesystem!
+
+After longer than I was expecting it finished up. It looks to be 16Mb which is exactly what is expected after referring to the manufacturer's Data Sheet. I ran `binwalk` on it and extracted the filesystem: 
 
 ```bash
 $ du -h rom.bin 
@@ -468,15 +468,17 @@ WARNING: Symlink points outside of the extraction directory: /home/axel/Desktop/
 16646144      0xFE0000        JFFS2 filesystem, little endian
 ```
 
-Now that it's all unpacked, I want to find an exploit that I can trigger remotely. There was only one listening service on the projector, the `boa` web server, so I found where it was stored in the filesystem, and I found all the `cgi` files that were accessible. There were a lot more thta I didn't find with `wfuzz`, which makes sense as it was fairly naive, and look like prime targets for VR. I went through each `.cgi` file manually in Ghidra inspecting the functions for basic command injections - remember, it may be low-hanging fruit, but a shell is a shell. And didn't really find anything. Then I started hunting around for bad application logic and found something.
+### Reversing the Firmware
 
-I noticed that there were a lot of function calls revolving around `{init,get,set,deinit,handle}LollipopConf`, and found that these were defined in `lib/libsd20x_mw.so`. After opening up that library in Ghidra, I found the responsible functions for getting/setting the configuration values, and it looks like it's just a simple `ini` handler. Initially, an application would call `lollipopConfInit` to read in the `ini`-formatted file stored in `/appconfigs/lollipop.conf`. Then, the get/set functions ill modify it in memory, it seems.
+Now that it's all unpacked, I want to find an exploit that I can trigger remotely. There was only one listening service on the projector, the `boa` web server, so I found where it was stored in the filesystem, and I found all the CGI scripts that were accessible. There were a lot more CGI scripts I didn't find with `wfuzz`, which makes sense as it was fairly naive search. I went through each `.cgi` file manually in Ghidra inspecting the functions for basic command injections - remember, it may be low-hanging fruit, but a shell is a shell. And didn't really find anything. Then I started hunting around for bad application logic and found something!
 
-The `lollipop.conf` file has something called the `ota_host_{en,cn}` values, which correspond to a URL to grab the OTA update. After looking around some of the `cgi-bin/` files, I saw the `ota_host.cgi` file updates the lollipop configuration. However, it uses the `ota_host` key, not the `ota_host_en` or `ota_host_cn` keys. I'll look around the actual update files and try to find out which config value it uses. I found the usage in `libsd20x_msrv.so` library, but it turns out it's still just using the `ota_host_{en,cn}` keys, *not* the `ota_host` key that we can influence. Bummer.
+I noticed that there were a lot of function calls revolving around `{init,get,set,deinit,handle}LollipopConf`, and found that these were defined in `lib/libsd20x_mw.so`. After opening up that library in Ghidra, I found the responsible functions for getting/setting the configuration values, and it looks like it's just a simple `ini` handler. Initially, an application would call `lollipopConfInit` to read in the `ini`-formatted file stored in `/appconfigs/lollipop.conf`, and then the get/set functions would modify the configuration in memory, with a final `fini` call dumping it back to disk.
+
+The `lollipop.conf` file has something called the `ota_host_{en,cn}` values, which correspond to a URL to grab the OTA update. After looking around some of the `cgi-bin/` files, I saw the `ota_host.cgi` file updates the lollipop configuration. However, it uses the `ota_host` key, not the `ota_host_en` or `ota_host_cn` keys. I'll look around the actual update files and try to find out which config value it uses. I found the usage in `libsd20x_msrv.so` library, but it turns out it's still just using the `ota_host_{en,cn}` keys, *not* the `ota_host` key that we can influence:
 
 ![OTA Configuration Key Usage](./images/ota-config-key.png)
 
-I did notice a stack-based buffer overflow in `ota_start.cgi` which would be fun to exploit, but first I want to see if there's something a little more simple. When I do reverse-engineering on my own time, I don't have a very regimented process for going through systems and binaries; I just kind of look around at vulnerable functions and branch off from there. I was reversing the `libsd20x_mw.so` library, which seems to be responsible for most of the actual functionality that the server offers, and stumbled on the `connect_network` function. This function, shocker, connects to a network that you specify. But more importantly, it looks like there is a trivial injection in it.
+Bummer, but we'll have to keep hunting. I did notice a stack-based buffer overflow in `ota_start.cgi` which would be fun to exploit, but first I want to see if there's something a little more simple. When I do reverse-engineering on my own time, I don't have a very regimented process for going through systems and binaries; I just kind of look around at vulnerable functions and branch off from there. I was reversing the `libsd20x_mw.so` library, which seems to be responsible for most of the actual functionality that the server offers, and stumbled on the `connect_network` function. This function, shocker, connects to a network that you specify. But more importantly, it looks like there is a trivial injection in it:
 
 ```c
 
@@ -542,7 +544,7 @@ $ grep -lr 'connect_network' .                                                  
 ./lib/libsd20x_msrv.so
 ```
 
-Perfect! It's called in two CGI files, we can investigate the first one for a quick win:
+It's called in two CGI files, which is important as these are hoste by the projector and something we can communicate to directly. After opening up the first hit, `connectSavedAp.cgi`, we find an easy win:
 
 ```c
 
@@ -569,4 +571,3 @@ undefined4 FUN_00010648(void)
 ```
 
 Perfect, so we just send a `curl` with an HTTP query string, and win!
-
