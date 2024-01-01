@@ -364,7 +364,7 @@ I ran another test and something happened... My projector isn't connecting to th
 While I wait for my new projector to get here, I can try using the SOIC8 reader that just got in! I installed `flashrom`, plugged everything in, realized I had to use a different USB port (thanks random GitHub Issue!), and got a dump! I just made sure to specify the chip I was reading from and the programmer I was using.
 
 ```bash
-$ sudo flashrom --verbose --programmer ch341a_spi --chip XM25QH128C --read rom.bin                                                    1 ↵
+$ sudo flashrom --verbose --programmer ch341a_spi --chip XM25QH128C --read rom.bin
 flashrom unknown on Linux 6.1.0-16-amd64 (x86_64)
 flashrom is free software, get the source code at https://flashrom.org
 
@@ -392,6 +392,8 @@ which mainboard or programmer you tested in the subject line.
 Thanks for your help!
 Reading flash... done.
 ```
+
+![Reading the Flash ROM](./images/rom-read.png)
 
 After longer than I was expecting it finished up. It looks to be 16Mb which is exactly what is expected after referring to the manufacturer's Data Sheet. I ran `binwalk` on it and extracted the filesystem!
 
@@ -465,4 +467,106 @@ WARNING: Symlink points outside of the extraction directory: /home/axel/Desktop/
 16630988      0xFDC4CC        JFFS2 filesystem, little endian
 16646144      0xFE0000        JFFS2 filesystem, little endian
 ```
+
+Now that it's all unpacked, I want to find an exploit that I can trigger remotely. There was only one listening service on the projector, the `boa` web server, so I found where it was stored in the filesystem, and I found all the `cgi` files that were accessible. There were a lot more thta I didn't find with `wfuzz`, which makes sense as it was fairly naive, and look like prime targets for VR. I went through each `.cgi` file manually in Ghidra inspecting the functions for basic command injections - remember, it may be low-hanging fruit, but a shell is a shell. And didn't really find anything. Then I started hunting around for bad application logic and found something.
+
+I noticed that there were a lot of function calls revolving around `{init,get,set,deinit,handle}LollipopConf`, and found that these were defined in `lib/libsd20x_mw.so`. After opening up that library in Ghidra, I found the responsible functions for getting/setting the configuration values, and it looks like it's just a simple `ini` handler. Initially, an application would call `lollipopConfInit` to read in the `ini`-formatted file stored in `/appconfigs/lollipop.conf`. Then, the get/set functions ill modify it in memory, it seems.
+
+The `lollipop.conf` file has something called the `ota_host_{en,cn}` values, which correspond to a URL to grab the OTA update. After looking around some of the `cgi-bin/` files, I saw the `ota_host.cgi` file updates the lollipop configuration. However, it uses the `ota_host` key, not the `ota_host_en` or `ota_host_cn` keys. I'll look around the actual update files and try to find out which config value it uses. I found the usage in `libsd20x_msrv.so` library, but it turns out it's still just using the `ota_host_{en,cn}` keys, *not* the `ota_host` key that we can influence. Bummer.
+
+![OTA Configuration Key Usage](./images/ota-config-key.png)
+
+I did notice a stack-based buffer overflow in `ota_start.cgi` which would be fun to exploit, but first I want to see if there's something a little more simple. When I do reverse-engineering on my own time, I don't have a very regimented process for going through systems and binaries; I just kind of look around at vulnerable functions and branch off from there. I was reversing the `libsd20x_mw.so` library, which seems to be responsible for most of the actual functionality that the server offers, and stumbled on the `connect_network` function. This function, shocker, connects to a network that you specify. But more importantly, it looks like there is a trivial injection in it.
+
+```c
+
+int connect_network(char *interface_name,char *ssid,char *param_3,int param_4,undefined4 *param_5,
+                   int param_6,char *param_7)
+
+{
+  /* ... SNIP ... */
+  pcVar4 = strstr((char *)param_5,"WEP");
+  if (pcVar4 == (char *)0x0) {
+    pcVar4 = strstr((char *)param_5,"PSK");
+    if (pcVar4 == (char *)0x0) {
+      iVar6 = 0;
+    }
+    else {
+      iVar6 = 2;
+    }
+  }
+  else {
+    iVar6 = 1;
+  }
+  /* ... SNIP ... */
+  getConnectedNetId(interface_name,acStack_530);
+  iVar1 = strcmp(ssid,acStack_530);
+  if (iVar1 == 0) {
+    memset(acStack_228,0,0x200);
+    snprintf(acStack_228,0x200,"###%s,%d %s is connected, skip connect_network2\n",
+             "connect_network2",0x1d3,ssid);
+    iVar6 = m_SD20xMsgFile;
+    if (m_SD20xMsgFile != 0) {
+      sVar2 = strlen(acStack_228);
+      write(iVar6,acStack_228,sVar2);
+      fsync(m_SD20xMsgFile);
+      return 0;
+    }
+    return 0;
+  }
+  set_wifi_status("connecting");
+  memset(acStack_530,0,0x100);
+  sprintf(acStack_530,"echo \"%s\" > /var/run/mcast/current_wifi",ssid);
+  sd20x_system(acStack_530);
+  if (param_6 == 0) {
+    iVar1 = getNetIdBySsid(interface_name,ssid);
+    if (-1 < iVar1) goto LAB_0001ac8c;
+    memset(acStack_228,0,0x200);
+    uVar7 = 0x24e;
+    pcVar4 = "###%s,%d saved ssid %s not found\n";
+  }
+  /* ... SNIP ... */
+```
+
+The function takes in an interface name, SSID that you want to connect to, and some other information that isn't important for our purposes. It then checks to see if you're already connect to the network, and if not executes the command `echo \"%s\" > /var/run/mcast/current_wifi`. Here, we can put in a fake SSID, with an injection. Something like `fakeAP$(touch /tmp/i-was-here)`. Let's trace this function back to see what actually calls it. After looking at the references in the library, we can see that it gets called externally:
+
+![Function References](./images/func-references.png)
+
+So let's just search it on the filesystem itself:
+
+```bash
+$ grep -lr 'connect_network' .                                                                                                      130 ↵
+./res/boa/cgi-bin/connectSavedAp.cgi
+./res/boa/cgi-bin/connect.cgi
+./lib/libsd20x_mw.so
+./lib/libsd20x_msrv.so
+```
+
+Perfect! It's called in two CGI files, we can investigate the first one for a quick win:
+
+```c
+
+undefined4 FUN_00010648(void)
+
+{
+  char *pcVar1;
+  int iVar2;
+  undefined auStack_8c [132];
+  
+  memset(auStack_8c,0,0x84);
+  puts("Content-Type:text/html\n");
+  puts("<TITLE>connect to saved AP</TITLE>");
+  pcVar1 = getenv("QUERY_STRING");
+  lollipop_socket_client_send("/var/run/shm/p2p.sock","P2P_START_SCAN");
+  URLDecode(pcVar1 + 5,auStack_8c,0x84);
+  iVar2 = connect_network("wlan0",auStack_8c,"",1,"",0,0);
+  if (iVar2 != 0) {
+    printf("connect to %s failed\n",auStack_8c);
+  }
+  printf("<meta HTTP-EQUIV=refresh Content=\'0;url=wifi.cgi\'>");
+  return 0;
+}
+```
+
+Perfect, so we just send a `curl` with an HTTP query string, and win!
 
