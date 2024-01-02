@@ -8,8 +8,6 @@ It does have an interesting mode of operation, where it broadcasts a WiFi networ
 
 ## Reconnaissance
 
-## Reconnaissance
-
 Let's start looking around! Step one for networked IoT devices is always doing an `nmap` scan:
 
 ```bash
@@ -39,7 +37,7 @@ Nmap done: 1 IP address (1 host up) scanned in 22.13 seconds
 
 Seems like the attack surface is the web interface that the projector exposes on port 80. The web server uses "Common Gateway Interface" (CGI) scripts for doing anything on the system. For example, to control the media (i.e. send pause, play, volume controls) you would visit `/cgi-bin/media.cgi`.
 
-I looked up the `boa` web server, and it looks like it's a fairly old, relatively-discontinued web server. There's a few vulnerabilities and CVEs out for it, but they tend to be disputed and application-specific, not targetting the actual webserver. So, I'm not going to try too hard to actually inspect the server.
+I looked up the `boa` web server, and it looks like it's a fairly old, relatively-discontinued web server. There's a few vulnerabilities and CVEs out for it, but they tend to be disputed and application-specific, not targetting the actual web server source. So, I'm not going to try too hard to actually inspect the server.
 
 I want to find out what other CGI scripts exist, that just aren't linked via the web pages I've found. I've found that developers accidentally leave some debugging web pages behind, and they're often pretty helpful for my reversing processes. It's time to break out `wfuzz` and see if we get any hits! I cloned the repository to get their wordlists and ran it against a few of them to get these results:
 
@@ -159,7 +157,7 @@ failed to connect to '10.0.0.227:5555': Connection refused
 
 ## The Hardware
 
-It's time to open this sucker up, and see if there is UART or some other serial communication mechanism. Now, this is where I messed up, *just a little bit*, and accidentally severed one of the connections on the ribbon cable that connects the actual projector lens to the board. The projector still turns on, but it's just a blank white screen now. Whoops! You can see below an image of the main board, as well as some annotations, below.
+It's time to open this sucker up, and see if there is UART or some other serial communication mechanism. Now, this is where I messed up, *just a little bit*, and accidentally severed one of the connections on the ribbon cable that connects the actual projector lens to the board. The projector still turns on, but it's just a blank white screen now. Whoops! You can see an image of the main board, as well as some annotations, below.
 
 ![Main Board](./images/board-annotated.png)
 
