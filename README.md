@@ -2,9 +2,9 @@
 
 ![ImperfectProjector](./images/ImperfectProjector.png)
 
-A few years ago I bought a low-quality projector from Amazon so I could watch movies in my room. To be honest, it works pretty well, has a decent brightness, and has like five different ways you can stream video/audio to it, so I can't complain too much.
+A few years ago I bought a low-quality projector from Amazon to watch movies in my room. To be honest, it works pretty well, has a decent brightness, and has like five different ways you can stream video/audio to it, so I can't complain too much.
 
-It does have an interesting mode of operation, where it broadcasts a WiFi network you can connect to, and then start controlling the device via a web interface. So what I'm seeing is: perfect hacking target.
+It does have an interesting mode of operation where it broadcasts a WiFi network you can connect to, and then start controlling the device via a web interface. So what I'm seeing is: perfect hacking target.
 
 ## Reconnaissance
 
@@ -35,7 +35,7 @@ OS and Service detection performed. Please report any incorrect results at https
 Nmap done: 1 IP address (1 host up) scanned in 22.13 seconds
 ```
 
-Seems like the attack surface is the web interface that the projector exposes on port 80. The web server uses "Common Gateway Interface" (CGI) scripts for doing anything on the system. For example, to control the media (i.e. send pause, play, volume controls) you would visit `/cgi-bin/media.cgi`.
+Seems like the attack surface is the web interface that the projector exposes on port 80. The web server uses "Common Gateway Interface" (CGI) scripts for all system operations. For example, to control the media (i.e. send pause, play, volume controls) you would visit `/cgi-bin/media.cgi`.
 
 I looked up the `boa` web server, and it looks like it's a fairly old, relatively-discontinued web server. There's a few vulnerabilities and CVEs out for it, but they tend to be disputed and application-specific, not targetting the actual web server source. So, I'm not going to try too hard to actually inspect the server.
 
