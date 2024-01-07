@@ -569,3 +569,19 @@ undefined4 FUN_00010648(void)
 ```
 
 Perfect, so we just send a `curl` with an HTTP query string, and win!
+
+## The New Projector
+
+This is where the project gets disappointing... My new projector came in the mail, so I immediately opened it up to try out my CLI injection. The packaging was the same, as far as I can remember some random Amazon product's packaging, the projector itself looked the same, but when I turned it on, I saw that it had a completely different interface. This was a little confusing, as I played around with the OTA functionality a lot, and never got an update to succeed. The only reason it didn't update that I can think of, is that the `sd203_SSV6X5X` in the OTA URL is a reference to the board/hardware version. The manufacturer might have discontinued the hardware that I had, so they don't offer updates to it anymore.
+
+In hopes that my exploit still worked, I ran an `nmap` scan against the new projector, but it had a completely different set of services avaiable, and the CGI scripts weren't accessible (prsuambly, non-existent). 
+
+## Conclusion
+
+Don't break your test device! Make sure you're on the latest device! And most importantly, it's okay :), not everything you do for fun has to be a l33t hackerz remote linux kernel 0day. Sometimes, projects don't pan out, and you don't find anything; othertimes, you can't validate your findings. I had a lot of fun with this project, learned a lot, and am pretty confident that I did find a remote RCE, but we'll never know.
+
+I'll start looking at the new projector, and if I find anything, it'll be a part two to this post.
+
+## Responsible Disclosure
+
+Since this product is EOL, and I can't even test this exploit to see if it worked, I'm not going to do the standard 90 day disclosure process. I'll email the vendor, when I post this blog to let them know.
